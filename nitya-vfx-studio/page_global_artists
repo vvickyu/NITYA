@@ -1,0 +1,238 @@
+"""
+page_global_artists.py — Global Artist Roster (cross-project)
+Add to app.py:
+    from page_global_artists import page_global_artists
+    # In sidebar: if st.button("🌐  All Artists"): nav("global_artists")
+    # In router:  elif page == "global_artists": page_global_artists()
+"""
+import streamlit as st
+import datetime
+
+SENIORITY_OPTS    = ["Junior", "Mid", "Senior", "Lead", "Freelance"]
+AVAILABILITY_OPTS = ["Available", "Busy", "On Leave", "Archived"]
+SKILL_OPTIONS     = ["Roto", "Paint", "Tracking", "CG", "Comp", "Motion Graphics",
+                     "Animation", "Lighting", "FX", "Lookdev", "Matte Painting"]
+
+AVAIL_COLORS = {
+    "Available": "#2ECC71",
+    "Busy":      "#E67E22",
+    "On Leave":  "#4A90D9",
+    "Archived":  "#6C7A89",
+}
+SENIORITY_COLORS = {
+    "Junior":    "#6C7A89",
+    "Mid":       "#4A90D9",
+    "Senior":    "#E67E22",
+    "Lead":      "#E94560",
+    "Freelance": "#9B59B6",
+}
+
+
+def fmt_hours(seconds):
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    return f"{h}h {m:02d}m" if h else f"{m}m"
+
+
+def page_global_artists(db, nav_fn):
+    st.markdown('<div class="section-header">🌐 Global Artist Roster</div>', unsafe_allow_html=True)
+
+    # ── Toolbar ───────────────────────────────────────────────────────────────
+    tc1, tc2, tc3 = st.columns([3, 1, 1])
+    with tc1:
+        search = st.text_input("", placeholder="Search artists…", label_visibility="collapsed", key="ga_search")
+    with tc2:
+        avail_filter = st.selectbox("Availability", ["All"] + AVAILABILITY_OPTS, key="ga_avail_filter")
+    with tc3:
+        if st.button("➕ Add Artist", use_container_width=True):
+            st.session_state["ga_show_add"] = not st.session_state.get("ga_show_add", False)
+
+    # ── Add Artist Form ───────────────────────────────────────────────────────
+    if st.session_state.get("ga_show_add"):
+        with st.expander("🎨 New Global Artist", expanded=True):
+            with st.form("ga_add_form"):
+                fc1, fc2, fc3 = st.columns(3)
+                with fc1:
+                    name       = st.text_input("Full Name *")
+                    role       = st.text_input("Primary Role", placeholder="Roto Artist, Compositor…")
+                    seniority  = st.selectbox("Seniority", SENIORITY_OPTS, index=1)
+                with fc2:
+                    email      = st.text_input("Email")
+                    phone      = st.text_input("Phone")
+                    joined     = st.date_input("Joined", value=datetime.date.today())
+                with fc3:
+                    color      = st.color_picker("Color Tag", "#f5a623")
+                    availability = st.selectbox("Availability", AVAILABILITY_OPTS)
+                    skills_sel = st.multiselect("Skills", SKILL_OPTIONS)
+
+                notes = st.text_area("Notes / Bio", height=60)
+
+                s1, s2 = st.columns([1, 5])
+                if s1.form_submit_button("✅ Create"):
+                    if not name.strip():
+                        st.error("Name is required.")
+                    else:
+                        db.create_global_artist(
+                            name=name.strip(), role=role.strip(),
+                            email=email.strip(), phone=phone.strip(),
+                            color=color, skills=",".join(skills_sel),
+                            seniority=seniority, availability=availability,
+                            notes=notes.strip(),
+                            joined_date=joined.strftime("%d-%b-%Y")
+                        )
+                        st.session_state["ga_show_add"] = False
+                        st.success(f"Artist '{name}' added to roster!")
+                        st.rerun()
+                if s2.form_submit_button("✖ Cancel"):
+                    st.session_state["ga_show_add"] = False
+                    st.rerun()
+
+    # ── Load artists ──────────────────────────────────────────────────────────
+    artists = db.list_global_artists()
+
+    if search:
+        q = search.lower()
+        artists = [a for a in artists if
+                   q in a.get("name","").lower() or
+                   q in a.get("role","").lower() or
+                   q in a.get("skills","").lower()]
+
+    if avail_filter != "All":
+        artists = [a for a in artists if a.get("availability") == avail_filter]
+
+    # ── Stats bar ─────────────────────────────────────────────────────────────
+    total_a    = len(artists)
+    avail_a    = sum(1 for a in artists if a.get("availability") == "Available")
+    busy_a     = sum(1 for a in artists if a.get("availability") == "Busy")
+    total_h    = sum(a.get("total_seconds", 0) for a in artists)
+    total_shot = sum(a.get("total_shots", 0) for a in artists)
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("🎨 Artists", total_a)
+    m2.metric("✅ Available", avail_a)
+    m3.metric("🔵 Busy", busy_a)
+    m4.metric("🎬 Total Shots", total_shot)
+    m5.metric("⏱ Tracked Hours", fmt_hours(total_h))
+    st.markdown("")
+
+    if not artists:
+        st.info("No artists yet. Click '➕ Add Artist' to build your global roster.")
+        return
+
+    # ── Artist cards ──────────────────────────────────────────────────────────
+    cols_per_row = 3
+    rows = [artists[i:i+cols_per_row] for i in range(0, len(artists), cols_per_row)]
+
+    for row in rows:
+        card_cols = st.columns(cols_per_row)
+        for col, artist in zip(card_cols, row):
+            with col:
+                avail       = artist.get("availability", "Available")
+                avail_color = AVAIL_COLORS.get(avail, "#6C7A89")
+                sen         = artist.get("seniority", "Mid")
+                sen_color   = SENIORITY_COLORS.get(sen, "#4A90D9")
+                color       = artist.get("color", "#f5a623")
+                skills_raw  = artist.get("skills", "") or ""
+                skill_tags  = [s.strip() for s in skills_raw.split(",") if s.strip()]
+                skill_html  = " ".join(
+                    f'<span style="background:#16213e;border:1px solid #2d3561;'
+                    f'border-radius:4px;padding:1px 6px;font-size:9px;color:#c8d0e0">{s}</span>'
+                    for s in skill_tags[:5]
+                )
+                hours_str   = fmt_hours(artist.get("total_seconds", 0))
+                active_s    = artist.get("active_shots", 0)
+                total_s_ct  = artist.get("total_shots", 0)
+
+                st.markdown(f"""
+                <div style="background:#16213e;border:1px solid #1e2d4a;border-radius:12px;
+                            padding:16px;margin-bottom:4px;border-top:3px solid {color}">
+                  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+                    <div>
+                      <div style="font-size:16px;font-weight:700;color:{color}">{artist['name']}</div>
+                      <div style="font-size:11px;color:#6c7a89;margin-top:2px">{artist.get('role','') or '—'}</div>
+                    </div>
+                    <div style="text-align:right">
+                      <span style="background:{avail_color}20;color:{avail_color};border:1px solid {avail_color}40;
+                                   border-radius:100px;padding:2px 8px;font-size:9px;font-weight:700">{avail}</span><br>
+                      <span style="background:{sen_color}20;color:{sen_color};border:1px solid {sen_color}40;
+                                   border-radius:100px;padding:2px 8px;font-size:9px;margin-top:4px;display:inline-block">{sen}</span>
+                    </div>
+                  </div>
+                  <div style="display:flex;gap:16px;margin-bottom:10px">
+                    <div style="text-align:center">
+                      <div style="font-size:20px;font-weight:700;color:#e94560">{active_s}</div>
+                      <div style="font-size:9px;color:#6c7a89">ACTIVE</div>
+                    </div>
+                    <div style="text-align:center">
+                      <div style="font-size:20px;font-weight:700;color:#4a90d9">{total_s_ct}</div>
+                      <div style="font-size:9px;color:#6c7a89">TOTAL</div>
+                    </div>
+                    <div style="text-align:center">
+                      <div style="font-size:20px;font-weight:700;color:#2ECC71">{hours_str}</div>
+                      <div style="font-size:9px;color:#6c7a89">TRACKED</div>
+                    </div>
+                  </div>
+                  <div style="margin-bottom:8px;min-height:18px">{skill_html}</div>
+                  <div style="font-size:10px;color:#3d4561">
+                    {('📧 ' + artist['email']) if artist.get('email') else ''}
+                    {(' · 📞 ' + artist['phone']) if artist.get('phone') else ''}
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # Action buttons
+                b1, b2, b3 = st.columns(3)
+                with b1:
+                    if st.button("👤 Profile", key=f"ga_view_{artist['id']}", use_container_width=True):
+                        nav_fn("artist_profile", current_global_artist_id=artist["id"])
+                with b2:
+                    if st.button("✏ Edit", key=f"ga_edit_{artist['id']}", use_container_width=True):
+                        st.session_state[f"ga_editing_{artist['id']}"] = True
+                with b3:
+                    if st.button("🗑", key=f"ga_del_{artist['id']}", use_container_width=True):
+                        st.session_state[f"ga_confirm_del_{artist['id']}"] = True
+
+                # Inline edit
+                if st.session_state.get(f"ga_editing_{artist['id']}"):
+                    skills_current = [s.strip() for s in (artist.get("skills","") or "").split(",") if s.strip()]
+                    with st.form(f"ga_edit_form_{artist['id']}"):
+                        ea1, ea2 = st.columns(2)
+                        new_role  = ea1.text_input("Role", value=artist.get("role",""))
+                        new_email = ea2.text_input("Email", value=artist.get("email",""))
+                        new_sen   = ea1.selectbox("Seniority", SENIORITY_OPTS,
+                                                   index=SENIORITY_OPTS.index(artist.get("seniority","Mid"))
+                                                   if artist.get("seniority") in SENIORITY_OPTS else 1)
+                        new_avail = ea2.selectbox("Availability", AVAILABILITY_OPTS,
+                                                   index=AVAILABILITY_OPTS.index(artist.get("availability","Available"))
+                                                   if artist.get("availability") in AVAILABILITY_OPTS else 0)
+                        new_color = ea1.color_picker("Color", value=artist.get("color","#f5a623"))
+                        new_skills = st.multiselect("Skills", SKILL_OPTIONS, default=skills_current)
+                        new_notes = st.text_area("Notes", value=artist.get("notes",""), height=50)
+                        s1, s2 = st.columns(2)
+                        if s1.form_submit_button("Save"):
+                            db.update_global_artist(
+                                artist["id"],
+                                role=new_role, email=new_email,
+                                seniority=new_sen, availability=new_avail,
+                                color=new_color, skills=",".join(new_skills),
+                                notes=new_notes
+                            )
+                            st.session_state[f"ga_editing_{artist['id']}"] = False
+                            st.rerun()
+                        if s2.form_submit_button("Cancel"):
+                            st.session_state[f"ga_editing_{artist['id']}"] = False
+                            st.rerun()
+
+                # Delete confirm
+                if st.session_state.get(f"ga_confirm_del_{artist['id']}"):
+                    st.warning(f"Remove '{artist['name']}' from global roster?")
+                    d1, d2 = st.columns(2)
+                    if d1.button("Yes", key=f"ga_yes_del_{artist['id']}"):
+                        db.delete_global_artist(artist["id"])
+                        st.session_state[f"ga_confirm_del_{artist['id']}"] = False
+                        st.rerun()
+                    if d2.button("No", key=f"ga_no_del_{artist['id']}"):
+                        st.session_state[f"ga_confirm_del_{artist['id']}"] = False
+                        st.rerun()
+
+        st.markdown("")
