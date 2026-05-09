@@ -84,6 +84,8 @@ _defaults = {
     "filter_seq": "All",
     "filter_priority": "All",
     "search_query": "",
+    "current_global_artist_id": None,
+    "ga_show_add": False,
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
