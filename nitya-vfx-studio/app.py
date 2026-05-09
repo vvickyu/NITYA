@@ -290,6 +290,11 @@ def render_sidebar():
                 st.markdown("---")
                 st.markdown(f"🎯 **{shot['shot_name']}**")
 
+            st.markdown("---")
+        if st.button("🌐  All Artists", use_container_width=True):
+            nav("global_artists")
+        if st.button("📊  Workload", use_container_width=True):
+            nav("workload")
         st.markdown("---")
         st.markdown(
             "<div style='font-size:11px;color:#3d4561;text-align:center'>"
