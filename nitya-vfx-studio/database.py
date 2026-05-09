@@ -1,7 +1,6 @@
 """
 Database layer for Nitya VFX Studio — SQLite.
-Rewritten for Streamlit Cloud / GitHub Codespaces compatibility.
-v5.0 — adds global artist roster, time tracking, workload tracking
+v5.1 — Global Artist Roster + Time Tracking + Portfolio + Workload Dashboard
 """
 import sqlite3
 import os
@@ -42,10 +41,12 @@ CREATE TABLE IF NOT EXISTS global_artists (
     role            TEXT DEFAULT '',
     email           TEXT DEFAULT '',
     phone           TEXT DEFAULT '',
-    portfolio_url   TEXT DEFAULT '',
     color           TEXT DEFAULT '#f5a623',
-    bio             TEXT DEFAULT '',
-    status          TEXT DEFAULT 'Active',
+    skills          TEXT DEFAULT '',
+    seniority       TEXT DEFAULT 'Mid',
+    availability    TEXT DEFAULT 'Available',
+    notes           TEXT DEFAULT '',
+    joined_date     TEXT DEFAULT '',
     created         TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS artists (
@@ -102,26 +103,30 @@ CREATE TABLE IF NOT EXISTS versions (
     status          TEXT DEFAULT 'Pending',
     created         TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS artist_time_tracking (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    artist_name     TEXT NOT NULL,
-    shot_id         INTEGER REFERENCES shots(id) ON DELETE CASCADE,
-    project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    date            TEXT NOT NULL,
-    hours_logged    REAL DEFAULT 0.0,
-    task            TEXT DEFAULT '',
-    notes           TEXT DEFAULT '',
-    created         TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS time_sessions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    shot_id      INTEGER NOT NULL REFERENCES shots(id) ON DELETE CASCADE,
+    artist_name  TEXT DEFAULT '',
+    dept         TEXT DEFAULT '',
+    started_at   TEXT NOT NULL,
+    ended_at     TEXT,
+    duration_s   INTEGER DEFAULT 0,
+    notes        TEXT DEFAULT '',
+    created      TEXT DEFAULT CURRENT_DATE,
+    FOREIGN KEY(shot_id) REFERENCES shots(id) ON DELETE CASCADE
 );
-CREATE TABLE IF NOT EXISTS artist_workload (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    artist_name     TEXT NOT NULL,
-    project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    assigned_shots  INTEGER DEFAULT 0,
-    completed_shots INTEGER DEFAULT 0,
-    total_hours     REAL DEFAULT 0.0,
-    last_updated    TEXT NOT NULL,
-    UNIQUE(artist_name, project_id)
+CREATE TABLE IF NOT EXISTS artist_portfolio (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    artist_id   INTEGER NOT NULL REFERENCES global_artists(id) ON DELETE CASCADE,
+    title       TEXT NOT NULL,
+    project     TEXT DEFAULT '',
+    shot        TEXT DEFAULT '',
+    media_url   TEXT DEFAULT '',
+    thumbnail   TEXT DEFAULT '',
+    category    TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    created     TEXT DEFAULT CURRENT_DATE,
+    FOREIGN KEY(artist_id) REFERENCES global_artists(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_shots_project  ON shots(project_id);
 CREATE INDEX IF NOT EXISTS idx_shots_status   ON shots(status);
@@ -129,9 +134,9 @@ CREATE INDEX IF NOT EXISTS idx_shots_artist   ON shots(artist);
 CREATE INDEX IF NOT EXISTS idx_shots_seq      ON shots(sequence);
 CREATE INDEX IF NOT EXISTS idx_versions_shot  ON versions(shot_id);
 CREATE INDEX IF NOT EXISTS idx_history_shot   ON shot_history(shot_id);
-CREATE INDEX IF NOT EXISTS idx_time_artist    ON artist_time_tracking(artist_name);
-CREATE INDEX IF NOT EXISTS idx_time_project   ON artist_time_tracking(project_id);
-CREATE INDEX IF NOT EXISTS idx_workload_artist ON artist_workload(artist_name);
+CREATE INDEX IF NOT EXISTS idx_time_artist    ON time_sessions(artist_name);
+CREATE INDEX IF NOT EXISTS idx_time_shot      ON time_sessions(shot_id);
+CREATE INDEX IF NOT EXISTS idx_portfolio_artist ON artist_portfolio(artist_id);
 """
 
 # Migration: add columns that may be missing in older databases
@@ -205,33 +210,39 @@ class Database:
             except Exception:
                 pass  # Column already exists — safe to ignore
 
-    # ── GLOBAL ARTISTS (Organization-wide roster) ────────────────────────────────
+    # ── GLOBAL ARTISTS ────────────────────────────────────────────────────────
 
-    def add_global_artist(self, name, role="", email="", phone="", portfolio_url="", bio="", color="#f5a623"):
-        """Add artist to global roster (available across all projects)."""
+    def create_global_artist(self, name, role="", email="", phone="", color="#f5a623",
+                             skills="", seniority="Mid", availability="Available",
+                             notes="", joined_date=""):
+        """Add artist to global roster."""
+        if not joined_date:
+            joined_date = datetime.date.today().strftime("%d-%b-%Y")
         today = datetime.date.today().strftime("%d-%b-%Y")
         try:
             cur = self._run(
                 """INSERT INTO global_artists 
-                   (name, role, email, phone, portfolio_url, bio, color, created)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (name, role, email, phone, portfolio_url, bio, color, today)
+                   (name,role,email,phone,color,skills,seniority,availability,notes,joined_date,created)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (name, role, email, phone, color, skills, seniority, availability, notes, joined_date, today)
             )
             return cur.lastrowid
         except sqlite3.IntegrityError:
-            return None  # Artist already exists
+            return None
 
     def list_global_artists(self):
-        """Get all global artists."""
-        return self._fetch(
-            """SELECT ga.*, 
-                 COUNT(DISTINCT s.id) as total_shots,
-                 COUNT(DISTINCT CASE WHEN s.status='Approved' THEN s.id END) as approved_shots
-               FROM global_artists ga
-               LEFT JOIN shots s ON s.artist=ga.name
-               GROUP BY ga.id
-               ORDER BY ga.name"""
-        )
+        """Get all global artists with shot stats."""
+        return self._fetch("""
+            SELECT ga.*,
+                   COUNT(DISTINCT CASE WHEN s.status NOT IN ('Approved','N/A') THEN s.id END) AS active_shots,
+                   COUNT(DISTINCT s.id) AS total_shots,
+                   COALESCE(SUM(ts.duration_s), 0) AS total_seconds
+            FROM global_artists ga
+            LEFT JOIN shots s ON s.artist = ga.name
+            LEFT JOIN time_sessions ts ON ts.artist_name = ga.name AND ts.ended_at IS NOT NULL
+            GROUP BY ga.id
+            ORDER BY ga.name
+        """)
 
     def get_global_artist(self, artist_id):
         """Get single global artist by ID."""
@@ -242,8 +253,9 @@ class Database:
         return self._fetchone("SELECT * FROM global_artists WHERE name=?", (name,))
 
     def update_global_artist(self, artist_id, **kwargs):
-        """Update global artist profile."""
-        allowed = {"name", "role", "email", "phone", "portfolio_url", "bio", "color", "status"}
+        """Update global artist."""
+        allowed = {"name", "role", "email", "phone", "color", "skills",
+                   "seniority", "availability", "notes", "joined_date"}
         fields = {k: v for k, v in kwargs.items() if k in allowed}
         if not fields:
             return
@@ -254,13 +266,7 @@ class Database:
         """Delete global artist."""
         self._run("DELETE FROM global_artists WHERE id=?", (artist_id,))
 
-    def get_global_artist_names(self):
-        """Get list of all global artist names."""
-        return [r["name"] for r in self._fetch(
-            "SELECT name FROM global_artists WHERE status='Active' ORDER BY name"
-        )]
-
-    # ── PROJECTS ─────────────────────────────────────────────────────────────────
+    # ── PROJECTS ─────────────────────────────────────────────────────────
 
     def create_project(self, display_name, project_type="", client="", description=""):
         safe = re.sub(r'[^\w\-]', '_', display_name).lower()
@@ -292,7 +298,7 @@ class Database:
     def delete_project(self, project_id):
         self._run("DELETE FROM projects WHERE id=?", (project_id,))
 
-    # ── ARTISTS (Project-specific) ────────────────────────────────────────────────
+    # ── ARTISTS (Project-specific) ────────────────────────────────────────
 
     def add_artist(self, project_id, name, role="", email="", color="#f5a623"):
         cur = self._run(
@@ -325,7 +331,7 @@ class Database:
             "SELECT name FROM artists WHERE project_id=? ORDER BY name", (project_id,)
         )]
 
-    # ── SHOTS ────────────────────────────────────────────────────────────────────
+    # ── SHOTS ──────────────────────────────────────────────────────────
 
     def add_shot(self, project_id, shot_name, sequence="", artist="",
                  frame_count=0, start_frame=1001, end_frame=1001,
@@ -361,6 +367,13 @@ class Database:
         return self._fetch(
             f"SELECT * FROM shots s WHERE {' AND '.join(where)} ORDER BY s.sequence, s.shot_name",
             params
+        )
+
+    def get_shots_for_artist(self, artist_name):
+        """Get all shots assigned to an artist."""
+        return self._fetch(
+            "SELECT * FROM shots WHERE artist=? ORDER BY sequence, shot_name",
+            (artist_name,)
         )
 
     def update_shot(self, shot_id, **kwargs):
@@ -417,7 +430,7 @@ class Database:
             FROM shots WHERE project_id=?
         """, (project_id,)) or {}
 
-    # ── SHOT HISTORY ─────────────────────────────────────────────────────────────
+    # ── SHOT HISTORY ──────────────────────────────────────────────────────
 
     def add_shot_history(self, shot_id, action, by_artist=""):
         today = datetime.date.today().strftime("%d-%b-%Y")
@@ -433,7 +446,7 @@ class Database:
             (shot_id,)
         )
 
-    # ── VERSIONS ─────────────────────────────────────────────────────────────────
+    # ── VERSIONS ──────────────────────────────────────────────────────
 
     def add_version(self, shot_id, version, date_sent="", artist="",
                     delivery_notes="", batch=""):
@@ -472,131 +485,171 @@ class Database:
     def delete_version(self, version_id):
         self._run("DELETE FROM versions WHERE id=?", (version_id,))
 
-    # ── TIME TRACKING ────────────────────────────────────────────────────────────
+    # ── TIME TRACKING ──────────────────────────────────────────────────
 
-    def log_artist_time(self, artist_name, project_id, hours, date=None, shot_id=None, task="", notes=""):
-        """Log hours worked by an artist."""
-        if not date:
-            date = datetime.date.today().strftime("%d-%b-%Y")
-        today = datetime.date.today().strftime("%d-%b-%Y")
-        cur = self._run("""
-            INSERT INTO artist_time_tracking
-              (artist_name, project_id, date, hours_logged, shot_id, task, notes, created)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (artist_name, project_id, date, hours, shot_id, task, notes, today))
-        self._update_workload(artist_name, project_id)
+    def start_timer(self, shot_id, artist_name, dept="", notes=""):
+        """Start a new timer. Auto-stops any running session for this artist."""
+        import datetime as dt
+        self.stop_all_running_timers(artist_name)
+        now = dt.datetime.utcnow().isoformat()
+        cur = self._run(
+            "INSERT INTO time_sessions (shot_id,artist_name,dept,started_at,notes) VALUES (?,?,?,?,?)",
+            (shot_id, artist_name, dept, now, notes)
+        )
         return cur.lastrowid
 
-    def get_artist_time_logs(self, artist_name, project_id=None, start_date=None, end_date=None):
-        """Get time logs for an artist, optionally filtered by date range."""
-        where = ["artist_name=?"]
-        params = [artist_name]
-        if project_id:
-            where.append("project_id=?")
-            params.append(project_id)
-        if start_date:
-            where.append("date>=?")
-            params.append(start_date)
-        if end_date:
-            where.append("date<=?")
-            params.append(end_date)
-        return self._fetch(
-            f"SELECT * FROM artist_time_tracking WHERE {' AND '.join(where)} ORDER BY date DESC",
-            params
+    def stop_timer(self, session_id):
+        """Stop a specific session. Returns duration in seconds."""
+        import datetime as dt
+        session = self._fetchone("SELECT started_at, ended_at FROM time_sessions WHERE id=?", (session_id,))
+        if not session or session["ended_at"]:
+            return 0
+        now = dt.datetime.utcnow()
+        started = dt.datetime.fromisoformat(session["started_at"])
+        duration_s = max(1, int((now - started).total_seconds()))
+        self._run(
+            "UPDATE time_sessions SET ended_at=?, duration_s=? WHERE id=?",
+            (now.isoformat(), duration_s, session_id)
         )
+        return duration_s
 
-    def get_total_hours_logged(self, artist_name, project_id=None):
-        """Get total hours logged by artist."""
-        if project_id:
-            row = self._fetchone(
-                "SELECT SUM(hours_logged) as total FROM artist_time_tracking WHERE artist_name=? AND project_id=?",
-                (artist_name, project_id)
+    def stop_all_running_timers(self, artist_name):
+        """Stop every open session for this artist."""
+        import datetime as dt
+        rows = self._fetch(
+            "SELECT id, started_at FROM time_sessions WHERE artist_name=? AND ended_at IS NULL",
+            (artist_name,)
+        )
+        now = dt.datetime.utcnow()
+        for row in rows:
+            started = dt.datetime.fromisoformat(row["started_at"])
+            duration_s = max(1, int((now - started).total_seconds()))
+            self._run(
+                "UPDATE time_sessions SET ended_at=?, duration_s=? WHERE id=?",
+                (now.isoformat(), duration_s, row["id"])
             )
-        else:
-            row = self._fetchone(
-                "SELECT SUM(hours_logged) as total FROM artist_time_tracking WHERE artist_name=?",
-                (artist_name,)
-            )
-        return row.get("total") or 0.0 if row else 0.0
 
-    def delete_time_log(self, log_id):
-        """Delete a time log entry."""
-        self._run("DELETE FROM artist_time_tracking WHERE id=?", (log_id,))
+    def get_running_timer(self, artist_name):
+        """Return running session dict or None."""
+        return self._fetchone("""
+            SELECT ts.*, s.shot_name, p.display_name AS project_name
+            FROM time_sessions ts
+            JOIN shots s ON s.id = ts.shot_id
+            LEFT JOIN projects p ON p.id = s.project_id
+            WHERE ts.artist_name=? AND ts.ended_at IS NULL
+            ORDER BY ts.started_at DESC LIMIT 1
+        """, (artist_name,))
 
-    # ── WORKLOAD TRACKING ────────────────────────────────────────────────────────
+    def get_time_sessions(self, shot_id=None, artist_name=None, limit=300):
+        """Get time sessions."""
+        clauses, params = [], []
+        if shot_id:
+            clauses.append("ts.shot_id=?"); params.append(shot_id)
+        if artist_name:
+            clauses.append("ts.artist_name=?"); params.append(artist_name)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        return self._fetch(f"""
+            SELECT ts.*, s.shot_name, p.display_name AS project_name
+            FROM time_sessions ts
+            JOIN shots s ON s.id = ts.shot_id
+            LEFT JOIN projects p ON p.id = s.project_id
+            {where}
+            ORDER BY ts.started_at DESC LIMIT ?
+        """, (*params, limit))
 
-    def _update_workload(self, artist_name, project_id):
-        """Update artist workload stats."""
-        stats = self._fetchone("""
-            SELECT 
-              COUNT(DISTINCT id) as assigned_shots,
-              SUM(CASE WHEN status='Approved' THEN 1 ELSE 0 END) as completed_shots
-            FROM shots
-            WHERE artist=? AND project_id=?
-        """, (artist_name, project_id))
-        
-        total_hours = self._fetchone(
-            "SELECT SUM(hours_logged) as total FROM artist_time_tracking WHERE artist_name=? AND project_id=?",
-            (artist_name, project_id)
-        )
-        
-        today = datetime.date.today().strftime("%d-%b-%Y")
-        
-        existing = self._fetchone(
-            "SELECT id FROM artist_workload WHERE artist_name=? AND project_id=?",
-            (artist_name, project_id)
-        )
-        
-        if existing:
-            self._run("""
-                UPDATE artist_workload
-                SET assigned_shots=?, completed_shots=?, total_hours=?, last_updated=?
-                WHERE artist_name=? AND project_id=?
-            """, (
-                stats.get("assigned_shots") or 0,
-                stats.get("completed_shots") or 0,
-                total_hours.get("total") or 0.0,
-                today, artist_name, project_id
-            ))
-        else:
-            self._run("""
-                INSERT INTO artist_workload
-                  (artist_name, project_id, assigned_shots, completed_shots, total_hours, last_updated)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                artist_name, project_id,
-                stats.get("assigned_shots") or 0,
-                stats.get("completed_shots") or 0,
-                total_hours.get("total") or 0.0,
-                today
-            ))
-
-    def get_artist_workload(self, artist_name, project_id):
-        """Get workload summary for an artist on a project."""
-        return self._fetchone(
-            "SELECT * FROM artist_workload WHERE artist_name=? AND project_id=?",
-            (artist_name, project_id)
-        )
-
-    def get_project_workload(self, project_id):
-        """Get workload for all artists on a project."""
-        return self._fetch(
-            """SELECT aw.*, 
-                 COUNT(DISTINCT s.id) as total_shots
-               FROM artist_workload aw
-               LEFT JOIN shots s ON s.artist=aw.artist_name AND s.project_id=aw.project_id
-               WHERE aw.project_id=?
-               ORDER BY aw.assigned_shots DESC""",
-            (project_id,)
-        )
-
-    def get_all_workload(self):
-        """Get workload summary across all projects."""
+    def get_artist_time_summary(self, artist_name):
+        """Get time breakdown by project/shot."""
         return self._fetch("""
-            SELECT aw.*,
-              COUNT(DISTINCT s.id) as total_shots
-            FROM artist_workload aw
-            LEFT JOIN shots s ON s.artist=aw.artist_name AND s.project_id=aw.project_id
-            GROUP BY aw.id
-            ORDER BY aw.total_hours DESC
+            SELECT p.display_name AS project_name,
+                   s.shot_name,
+                   ts.dept,
+                   SUM(ts.duration_s) AS total_s,
+                   COUNT(*) AS sessions
+            FROM time_sessions ts
+            JOIN shots s ON s.id = ts.shot_id
+            LEFT JOIN projects p ON p.id = s.project_id
+            WHERE ts.artist_name=? AND ts.ended_at IS NOT NULL
+            GROUP BY p.id, s.id, ts.dept
+            ORDER BY total_s DESC
+        """, (artist_name,))
+
+    # ── WORKLOAD ────────────────────────────────────────────────────────
+
+    def get_workload_summary(self):
+        """Per-artist shot status breakdown + tracked hours."""
+        rows = self._fetch("""
+            SELECT
+                s.artist AS artist_name,
+                SUM(CASE WHEN s.status='WIP'      THEN 1 ELSE 0 END) AS wip,
+                SUM(CASE WHEN s.status='Pending'  THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN s.status='Review'   THEN 1 ELSE 0 END) AS review,
+                SUM(CASE WHEN s.status='Approved' THEN 1 ELSE 0 END) AS approved,
+                SUM(CASE WHEN s.status='Retake'   THEN 1 ELSE 0 END) AS retake,
+                SUM(CASE WHEN s.status='Hold'     THEN 1 ELSE 0 END) AS hold,
+                COUNT(*) AS total_shots,
+                COALESCE(SUM(s.frame_count), 0) AS total_frames
+            FROM shots s
+            WHERE s.artist IS NOT NULL AND s.artist != ''
+            GROUP BY s.artist
+            ORDER BY wip DESC, total_shots DESC
         """)
+        hours_map = {r["artist_name"]: r["total_s"] 
+                     for r in self._fetch("""
+                        SELECT artist_name, SUM(duration_s) AS total_s
+                        FROM time_sessions WHERE ended_at IS NOT NULL
+                        GROUP BY artist_name
+                     """)}
+        for row in rows:
+            row["tracked_seconds"] = hours_map.get(row["artist_name"], 0)
+        return rows
+
+    # ── PORTFOLIO ────────────────────────────────────────────────────────
+
+    def add_portfolio_entry(self, artist_id, title, project="", shot="",
+                            media_url="", thumbnail="", category="", description=""):
+        """Add portfolio entry."""
+        cur = self._run(
+            """INSERT INTO artist_portfolio
+               (artist_id,title,project,shot,media_url,thumbnail,category,description)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (artist_id, title, project, shot, media_url, thumbnail, category, description)
+        )
+        return cur.lastrowid
+
+    def get_portfolio(self, artist_id):
+        """Get portfolio entries for artist."""
+        return self._fetch(
+            "SELECT * FROM artist_portfolio WHERE artist_id=? ORDER BY created DESC",
+            (artist_id,)
+        )
+
+    def delete_portfolio_entry(self, entry_id):
+        """Delete portfolio entry."""
+        self._run("DELETE FROM artist_portfolio WHERE id=?", (entry_id,))
+
+    # ── ARTIST REPORT ────────────────────────────────────────────────────
+
+    def build_artist_report(self, artist_name):
+        """Build comprehensive artist report."""
+        shots = self._fetch("""
+            SELECT p.display_name AS project, s.sequence, s.shot_name,
+                   s.status, s.priority, s.frame_count, s.eta,
+                   s.roto, s.paint, s.comp, s.cg, s.tracking
+            FROM shots s
+            LEFT JOIN projects p ON p.id = s.project_id
+            WHERE s.artist = ?
+            ORDER BY p.display_name, s.sequence, s.shot_name
+        """, (artist_name,))
+        time_rows = self.get_artist_time_summary(artist_name)
+        total_s = sum(r.get("total_s") or 0 for r in time_rows)
+        return {
+            "artist":       artist_name,
+            "shots":        shots,
+            "time_rows":    time_rows,
+            "total_hours":  round(total_s / 3600, 2),
+            "total_shots":  len(shots),
+            "approved":     sum(1 for s in shots if s.get("status") == "Approved"),
+            "wip":          sum(1 for s in shots if s.get("status") == "WIP"),
+            "retake":       sum(1 for s in shots if s.get("status") == "Retake"),
+            "total_frames": sum(s.get("frame_count") or 0 for s in shots),
+        }
