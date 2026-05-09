@@ -1,558 +1,160 @@
 """
-page_artist_profile.py — Full artist profile: portfolio, time log, shot history, report export
-Add to app.py:
-    from page_artist_profile import page_artist_profile
-    elif page == "artist_profile": page_artist_profile()
+page_artist_profile.py — Individual Artist Profile & Statistics
 """
 import streamlit as st
-import datetime
-import io
-
-DEPT_OPTIONS = ["Roto", "Paint", "Tracking", "CG", "Comp", "Motion Graphics", "Animation", "General"]
-CATEGORY_OPTIONS = ["Roto", "Paint", "Comp", "CG", "Animation", "FX", "Motion Graphics", "Other"]
-
+import pandas as pd
 
 def fmt_hours(seconds):
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
-    if h >= 1:
-        return f"{h}h {m:02d}m"
-    return f"{m}m" if m else "0m"
+    return f"{h}h {m:02d}m" if h else f"{m}m"
 
-
-def fmt_duration(seconds):
-    if not seconds:
-        return "—"
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    if h:
-        return f"{h}h {m:02d}m"
-    if m:
-        return f"{m}m {s:02d}s"
-    return f"{s}s"
-
-
-def page_artist_profile(db, nav_fn):
-    artist_id = st.session_state.get("current_global_artist_id")
+def page_artist_profile(db, artist_id, nav_fn):
+    """Display full artist profile & work history."""
+    
     artist = db.get_global_artist(artist_id)
     if not artist:
-        st.error("Artist not found.")
+        st.error("Artist not found")
         return
 
-    # ── Back + Title ──────────────────────────────────────────────────────────
-    col_back, col_title = st.columns([1, 8])
-    with col_back:
-        if st.button("← Roster"):
-            nav_fn("global_artists")
-    with col_title:
-        color = artist.get("color", "#f5a623")
-        st.markdown(
-            f"<h2 style='color:{color};margin:0'>🎨 {artist['name']}"
-            f"<span style='font-size:13px;color:#6c7a89;margin-left:12px'>"
-            f"{artist.get('role','')}</span></h2>",
-            unsafe_allow_html=True
-        )
+    if st.button("← Back to Roster"):
+        st.session_state["page"] = "global_artists"
+        st.rerun()
 
-    # ── Summary pills ─────────────────────────────────────────────────────────
-    avail_colors = {"Available": "#2ECC71", "Busy": "#E67E22",
-                    "On Leave": "#4A90D9", "Archived": "#6C7A89"}
+    # Header
+    color = artist.get("color", "#f5a623")
+    sen = artist.get("seniority", "Mid")
     avail = artist.get("availability", "Available")
-    ac = avail_colors.get(avail, "#6C7A89")
-    skills_raw = (artist.get("skills") or "").split(",")
-    skills_html = " ".join(
-        f'<span style="background:#1e2d4a;border:1px solid #2d3561;border-radius:4px;'
-        f'padding:2px 8px;font-size:10px;color:#c8d0e0">{s.strip()}</span>'
-        for s in skills_raw if s.strip()
-    )
-    st.markdown(
-        f'<span style="background:{ac}20;color:{ac};border:1px solid {ac}40;'
-        f'border-radius:100px;padding:2px 10px;font-size:11px;font-weight:700">{avail}</span>&nbsp;&nbsp;'
-        f'<span style="color:#6c7a89;font-size:11px">{artist.get("seniority","")}</span>'
-        f'{"&nbsp;&nbsp;" + skills_html if skills_html else ""}',
-        unsafe_allow_html=True
-    )
-    st.markdown("---")
 
-    # ── 3 tabs ────────────────────────────────────────────────────────────────
-    tab_work, tab_time, tab_port, tab_report = st.tabs(
-        ["📊 Workload", "⏱ Time Tracking", "🎬 Portfolio", "📤 Export Report"]
-    )
+    st.markdown(f"""
+    <div style="background:#16213e;border:1px solid #1e2d4a;border-radius:12px;padding:20px;border-left:5px solid {color};margin-bottom:20px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div style="font-size:32px;font-weight:700;color:{color}">{artist['name']}</div>
+          <div style="font-size:16px;color:#c8d0e0;margin-top:4px">{artist.get('role', '—')}</div>
+          <div style="font-size:12px;color:#6c7a89;margin-top:8px">
+            {'📧 ' + artist['email'] if artist.get('email') else ''} 
+            {' · 📞 ' + artist['phone'] if artist.get('phone') else ''}
+            {' · Joined: ' + artist.get('joined_date', '—') if artist.get('joined_date') else ''}
+          </div>
+          <div style="margin-top:8px">
+            <span style="background:#9B59B620;color:#9B59B6;border:1px solid #9B59B640;border-radius:100px;padding:4px 12px;font-size:11px;font-weight:700;margin-right:8px">{sen}</span>
+            <span style="background:#2ECC7120;color:#2ECC71;border:1px solid #2ECC7140;border-radius:100px;padding:4px 12px;font-size:11px;font-weight:700">{avail}</span>
+          </div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:11px;color:#6c7a89;letter-spacing:1px;text-transform:uppercase">Bio</div>
+          <div style="font-size:12px;color:#c8d0e0;max-width:400px;margin-top:8px">{artist.get('notes', '—')}</div>
+        </div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # TAB 1 — WORKLOAD
-    # ═══════════════════════════════════════════════════════════════════════════
-    with tab_work:
-        report = db.build_artist_report(artist["name"])
-        shots  = report["shots"]
+    # Stats columns
+    shots = db.get_shots_for_artist(artist['name'])
+    time_logs = db.get_artist_time_summary(artist['name'])
+    total_s = sum(r.get("total_s") or 0 for r in time_logs)
+    
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("🎬 Total Shots", len(shots))
+    m2.metric("✅ Approved", sum(1 for s in shots if s.get("status") == "Approved"))
+    m3.metric("🔵 WIP", sum(1 for s in shots if s.get("status") == "WIP"))
+    m4.metric("🎞 Frames", sum(s.get("frame_count", 0) for s in shots))
+    m5.metric("⏱ Tracked Time", fmt_hours(total_s))
 
-        # KPIs
-        k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("Total Shots",   report["total_shots"])
-        k2.metric("✅ Approved",   report["approved"])
-        k3.metric("🔵 WIP",        report["wip"])
-        k4.metric("🔴 Retake",     report["retake"])
-        k5.metric("🎞 Frames",     f"{report['total_frames']:,}")
+    # Tabs
+    tab1, tab2, tab3 = st.tabs(["📋 Assigned Shots", "⏱ Time Logs", "🖼 Portfolio"])
 
+    # ── SHOTS ──────────────────────────────────────────────────────
+    with tab1:
         if not shots:
             st.info("No shots assigned yet.")
         else:
-            # Group by project
-            projects = {}
-            for s in shots:
-                proj = s.get("project") or "—"
-                projects.setdefault(proj, []).append(s)
+            df = pd.DataFrame([{
+                "Project": s.get("display_name") or s.get("project_id", "—"),
+                "Sequence": s.get("sequence", "—"),
+                "Shot": s.get("shot_name"),
+                "Status": s.get("status", "—"),
+                "Priority": s.get("priority", "—"),
+                "Frames": s.get("frame_count", 0),
+                "ETA": s.get("eta", "—"),
+            } for s in shots])
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
-            STATUS_COLORS = {
-                "Pending": "#E67E22", "WIP": "#4A90D9", "Review": "#9B59B6",
-                "Approved": "#2ECC71", "Hold": "#E74C3C", "Retake": "#F39C12", "N/A": "#6C7A89",
-            }
-
-            for proj_name, proj_shots in projects.items():
-                with st.expander(f"📁 {proj_name} — {len(proj_shots)} shots", expanded=True):
-                    for s in proj_shots:
-                        sc = STATUS_COLORS.get(s["status"], "#6C7A89")
-                        seq = f"[{s['sequence']}] " if s.get("sequence") else ""
-                        st.markdown(
-                            f'<div style="display:flex;align-items:center;gap:10px;'
-                            f'padding:6px 0;border-bottom:1px solid #1e2d4a">'
-                            f'<span style="color:#fff;font-weight:600;min-width:140px">{seq}{s["shot_name"]}</span>'
-                            f'<span style="background:{sc}20;color:{sc};border:1px solid {sc}40;'
-                            f'border-radius:100px;padding:1px 8px;font-size:10px">{s["status"]}</span>'
-                            f'<span style="color:#6c7a89;font-size:11px">{s.get("eta","")}</span>'
-                            f'<span style="color:#4a90d9;font-size:11px;margin-left:auto">{s.get("frame_count",0)} fr</span>'
-                            f'</div>',
-                            unsafe_allow_html=True
-                        )
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    # TAB 2 — TIME TRACKING
-    # ═══════════════════════════════════════════════════════════════════════════
-    with tab_time:
-        artist_name = artist["name"]
-
-        # Running timer widget
-        running = db.get_running_timer(artist_name)
-        st.markdown("### ⏱ Timer")
-
-        if running:
-            started = datetime.datetime.fromisoformat(running["started_at"])
-            elapsed_s = int((datetime.datetime.utcnow() - started).total_seconds())
-            st.markdown(
-                f'<div style="background:#16213e;border:1px solid #2ECC7140;border-radius:12px;'
-                f'padding:16px;border-left:4px solid #2ECC71">'
-                f'<div style="font-size:12px;color:#2ECC71;font-weight:700;letter-spacing:1px">🟢 TIMER RUNNING</div>'
-                f'<div style="font-size:28px;font-weight:900;color:#fff;margin:6px 0">'
-                f'{fmt_duration(elapsed_s)}</div>'
-                f'<div style="font-size:12px;color:#6c7a89">'
-                f'Shot: <b style="color:#f5a623">{running["shot_name"]}</b> · '
-                f'Project: <b style="color:#4a90d9">{running.get("project_name","—")}</b> · '
-                f'Dept: <b style="color:#9b59b6">{running.get("dept","—")}</b></div>'
-                f'<div style="font-size:10px;color:#3d4561;margin-top:4px">'
-                f'Started: {running["started_at"][:16].replace("T"," ")} UTC</div>'
-                f'</div>',
-                unsafe_allow_html=True
-            )
-            if st.button("⏹ Stop Timer", use_container_width=True, key="stop_timer_btn"):
-                dur = db.stop_timer(running["id"])
-                st.success(f"Stopped! Logged {fmt_duration(dur)}")
-                st.rerun()
+    # ── TIME LOGS ──────────────────────────────────────────────────
+    with tab2:
+        if not time_logs:
+            st.info("No time entries yet.")
         else:
-            st.markdown(
-                '<div style="background:#16213e;border:1px solid #1e2d4a;border-radius:10px;'
-                'padding:14px;color:#6c7a89;font-family:monospace;font-size:12px;text-align:center">'
-                '⏸ No active timer</div>',
-                unsafe_allow_html=True
-            )
+            df = pd.DataFrame([{
+                "Project": r.get("project_name", "—"),
+                "Shot": r.get("shot_name", "—"),
+                "Task": r.get("dept", "—"),
+                "Sessions": r.get("sessions", 0),
+                "Total Time": fmt_hours(r.get("total_s", 0)),
+            } for r in time_logs])
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
-        # Start new timer
-        st.markdown("#### Start New Session")
-        with st.form("start_timer_form"):
-            all_shots = db.get_shots_for_artist(artist_name) if hasattr(db, "get_shots_for_artist") else []
+            # Timeline
+            st.markdown("### Time Entry History")
+            recent = db.get_time_sessions(artist_name=artist['name'], limit=20)
+            if recent:
+                for sess in recent:
+                    dur = fmt_hours(sess.get("duration_s", 0))
+                    st.markdown(f"""
+                    <div style="background:#16213e;border-left:3px solid {color};padding:12px;margin-bottom:8px;border-radius:4px">
+                      <div style="font-weight:700;color:#c8d0e0">{sess.get('project_name', '—')} — {sess.get('shot_name', '—')}</div>
+                      <div style="font-size:11px;color:#6c7a89;margin-top:4px">
+                        {sess.get('dept', '—')} | {dur} | {sess.get('created', '—')}
+                      </div>
+                      {f"<div style='font-size:10px;color:#3d4561;margin-top:4px;font-style:italic'>{sess.get('notes', '')}</div>" if sess.get('notes') else ''}
+                    </div>
+                    """, unsafe_allow_html=True)
 
-            # Fallback: get shots via report
-            if not all_shots:
-                all_shots = report["shots"] if "report" in dir() else []
-                # build minimal list
-                try:
-                    r2 = db.build_artist_report(artist_name)
-                    all_shots = r2["shots"]
-                except Exception:
-                    all_shots = []
-
-            shot_map = {f"{s.get('project','?')} / {s.get('sequence','')} / {s['shot_name']}": s
-                        for s in all_shots}
-            # Also allow manual shot selection from DB
-            tc1, tc2 = st.columns(2)
-            with tc1:
-                if shot_map:
-                    shot_label = st.selectbox("Shot", list(shot_map.keys()))
-                    selected_shot = shot_map.get(shot_label)
-                else:
-                    st.info("No shots assigned to this artist yet.")
-                    selected_shot = None
-                dept = st.selectbox("Department", DEPT_OPTIONS)
-            with tc2:
-                timer_notes = st.text_input("Notes (optional)", placeholder="What are you working on?")
-
-            if st.form_submit_button("▶ Start Timer", use_container_width=True):
-                if not selected_shot:
-                    st.error("No shots available to track.")
-                else:
-                    # Look up shot id
-                    cur = db.conn.cursor()
-                    cur.execute("SELECT id FROM shots WHERE shot_name=? LIMIT 1",
-                                (selected_shot["shot_name"],))
-                    row = cur.fetchone()
-                    if row:
-                        db.start_timer(row["id"], artist_name, dept=dept, notes=timer_notes)
-                        st.success("Timer started!")
+    # ── PORTFOLIO ──────────────────────────────────────────────────
+    with tab3:
+        portfolio = db.get_portfolio(artist['id'])
+        
+        if st.button("➕ Add Portfolio Entry"):
+            st.session_state["show_port_add"] = not st.session_state.get("show_port_add", False)
+        
+        if st.session_state.get("show_port_add"):
+            with st.form("add_portfolio_form"):
+                title = st.text_input("Title *")
+                proj = st.text_input("Project")
+                shot = st.text_input("Shot")
+                cat = st.selectbox("Category", ["Roto", "Paint", "CG", "Comp", "VFX", "Other"])
+                url = st.text_input("Media URL")
+                thumb = st.text_input("Thumbnail URL")
+                desc = st.text_area("Description", height=60)
+                s1, s2 = st.columns([1, 5])
+                if s1.form_submit_button("✅ Add"):
+                    if title.strip():
+                        db.add_portfolio_entry(artist['id'], title, proj, shot, url, thumb, cat, desc)
+                        st.session_state["show_port_add"] = False
+                        st.success("Added!")
                         st.rerun()
-                    else:
-                        st.error("Shot not found in database.")
+                if s2.form_submit_button("✖"):
+                    st.session_state["show_port_add"] = False
+                    st.rerun()
 
-        # ── Session history ───────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("#### Recent Sessions")
-        sessions = db.get_time_sessions(artist_name=artist_name, limit=50)
-        completed = [s for s in sessions if s.get("ended_at")]
-
-        if not completed:
-            st.caption("No completed sessions yet.")
+        if not portfolio:
+            st.info("No portfolio entries yet.")
         else:
-            total_tracked = sum(s.get("duration_s", 0) for s in completed)
-            st.markdown(
-                f'<div style="font-size:12px;color:#6c7a89;margin-bottom:8px">'
-                f'Total logged: <b style="color:#2ECC71">{fmt_hours(total_tracked)}</b> '
-                f'across {len(completed)} sessions</div>',
-                unsafe_allow_html=True
-            )
-
-            for sess in completed[:30]:
-                dur = sess.get("duration_s", 0)
-                date_str = (sess.get("started_at") or "")[:10]
-                st.markdown(
-                    f'<div style="display:flex;align-items:center;gap:10px;padding:6px 4px;'
-                    f'border-bottom:1px solid #1e2d4a;font-size:12px">'
-                    f'<span style="color:#6c7a89;min-width:80px">{date_str}</span>'
-                    f'<span style="color:#f5a623;min-width:130px">{sess.get("shot_name","—")}</span>'
-                    f'<span style="color:#9b59b6;min-width:100px">{sess.get("dept","—")}</span>'
-                    f'<span style="color:#2ECC71;font-weight:700;min-width:80px">{fmt_duration(dur)}</span>'
-                    f'<span style="color:#3d4561">{sess.get("notes","")}</span>'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-
-            # Per-project breakdown
-            st.markdown("---")
-            st.markdown("#### Time by Project / Shot")
-            time_summary = db.get_artist_time_summary(artist_name)
-            if time_summary:
-                proj_totals = {}
-                for row in time_summary:
-                    pn = row.get("project_name") or "—"
-                    proj_totals[pn] = proj_totals.get(pn, 0) + (row.get("total_s") or 0)
-
-                for pname, ptotal in sorted(proj_totals.items(), key=lambda x: -x[1]):
-                    pct = int(ptotal / max(total_tracked, 1) * 100)
-                    st.markdown(
-                        f'<div style="margin-bottom:10px">'
-                        f'<div style="display:flex;justify-content:space-between;margin-bottom:4px">'
-                        f'<span style="color:#c8d0e0;font-size:12px">{pname}</span>'
-                        f'<span style="color:#2ECC71;font-size:12px">{fmt_hours(ptotal)}</span>'
-                        f'</div>'
-                        f'<div style="background:#16213e;border-radius:3px;height:4px">'
-                        f'<div style="background:#2ECC71;height:4px;border-radius:3px;width:{pct}%"></div>'
-                        f'</div></div>',
-                        unsafe_allow_html=True
-                    )
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    # TAB 3 — PORTFOLIO
-    # ═══════════════════════════════════════════════════════════════════════════
-    with tab_port:
-        st.markdown("### 🎬 Portfolio")
-
-        with st.expander("➕ Add Portfolio Entry", expanded=False):
-            with st.form("portfolio_add_form"):
-                pa1, pa2 = st.columns(2)
-                with pa1:
-                    port_title   = st.text_input("Title *", placeholder="Clean VFX plate – SH0010")
-                    port_project = st.text_input("Project", placeholder="Marvel_S01")
-                    port_shot    = st.text_input("Shot", placeholder="SH0010")
-                with pa2:
-                    port_cat     = st.selectbox("Category", CATEGORY_OPTIONS)
-                    port_media   = st.text_input("Media URL", placeholder="https://…")
-                    port_thumb   = st.text_input("Thumbnail URL (optional)", placeholder="https://…")
-                port_desc = st.text_area("Description", height=60, placeholder="Brief description of work…")
-                if st.form_submit_button("✅ Add Entry"):
-                    if not port_title.strip():
-                        st.error("Title required.")
-                    else:
-                        db.add_portfolio_entry(
-                            artist_id=artist_id,
-                            title=port_title.strip(),
-                            project=port_project.strip(),
-                            shot=port_shot.strip(),
-                            media_url=port_media.strip(),
-                            thumbnail=port_thumb.strip(),
-                            category=port_cat,
-                            description=port_desc.strip()
-                        )
-                        st.success("Entry added!")
+            for entry in portfolio:
+                with st.container():
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        if entry.get("thumbnail"):
+                            st.image(entry["thumbnail"], use_column_width=True)
+                    with col2:
+                        st.markdown(f"""
+                        **{entry['title']}**  
+                        {entry.get('project', '—')} | {entry.get('shot', '—')} | **{entry.get('category', '—')}**  
+                        {entry.get('description', '')}  
+                        {f"[View]({entry['media_url']})" if entry.get('media_url') else ''}
+                        """)
+                    if st.button("🗑 Delete", key=f"del_port_{entry['id']}"):
+                        db.delete_portfolio_entry(entry['id'])
                         st.rerun()
-
-        entries = db.get_portfolio(artist_id)
-        if not entries:
-            st.info("No portfolio entries yet. Add your first piece of work above.")
-        else:
-            # Group by category
-            by_cat = {}
-            for e in entries:
-                by_cat.setdefault(e.get("category","Other"), []).append(e)
-
-            for cat, cat_entries in by_cat.items():
-                st.markdown(f"**{cat}** ({len(cat_entries)} entries)")
-                grid = st.columns(3)
-                for idx, entry in enumerate(cat_entries):
-                    with grid[idx % 3]:
-                        thumb = entry.get("thumbnail") or entry.get("media_url", "")
-                        if thumb and (thumb.startswith("http://") or thumb.startswith("https://")):
-                            st.image(thumb, use_container_width=True)
-                        st.markdown(
-                            f'<div style="background:#16213e;border:1px solid #1e2d4a;'
-                            f'border-radius:8px;padding:10px;margin-bottom:8px">'
-                            f'<div style="font-weight:700;color:#fff;font-size:13px">{entry["title"]}</div>'
-                            f'<div style="font-size:10px;color:#6c7a89">'
-                            f'{entry.get("project","")} {("/ " + entry["shot"]) if entry.get("shot") else ""}</div>'
-                            f'{"<div style=font-size:11px;color:#c8d0e0;margin-top:4px>" + entry["description"] + "</div>" if entry.get("description") else ""}'
-                            f'{"<a href=" + entry["media_url"] + ' target=_blank style=font-size:10px;color:#4a90d9>🔗 View</a>' if entry.get("media_url") else ""}'
-                            f'</div>',
-                            unsafe_allow_html=True
-                        )
-                        if st.button("🗑", key=f"del_port_{entry['id']}"):
-                            db.delete_portfolio_entry(entry["id"])
-                            st.rerun()
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    # TAB 4 — EXPORT REPORT
-    # ═══════════════════════════════════════════════════════════════════════════
-    with tab_report:
-        st.markdown("### 📤 Export Artist Report")
-
-        report = db.build_artist_report(artist["name"])
-        time_summary = db.get_artist_time_summary(artist["name"])
-        total_s = sum(r.get("total_s", 0) for r in time_summary)
-
-        # Summary preview
-        s1, s2, s3, s4 = st.columns(4)
-        s1.metric("Total Shots",  report["total_shots"])
-        s2.metric("Approved",     report["approved"])
-        s3.metric("Total Frames", f"{report['total_frames']:,}")
-        s4.metric("Hours Logged", fmt_hours(total_s))
-
-        st.markdown("---")
-
-        # ── Excel export ──────────────────────────────────────────────────────
-        try:
-            import openpyxl
-            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-            from openpyxl.utils import get_column_letter
-
-            def make_artist_excel(report, artist_info, time_summary):
-                wb = openpyxl.Workbook()
-
-                # ── Styles ────────────────────────────────────────────────────
-                dark_bg  = PatternFill("solid", fgColor="0A0A14")
-                card_bg  = PatternFill("solid", fgColor="16213E")
-                hdr_bg   = PatternFill("solid", fgColor="E94560")
-                sub_bg   = PatternFill("solid", fgColor="1E2D4A")
-                accent_bg= PatternFill("solid", fgColor="4A90D9")
-                grn_bg   = PatternFill("solid", fgColor="2ECC71")
-                org_bg   = PatternFill("solid", fgColor="E67E22")
-
-                white_bold = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
-                white_norm = Font(name="Calibri", color="C8D0E0", size=10)
-                grey_font  = Font(name="Calibri", color="6C7A89", size=9)
-                red_bold   = Font(name="Calibri", bold=True, color="E94560", size=14)
-                accent_fnt = Font(name="Calibri", bold=True, color="4A90D9", size=11)
-                grn_font   = Font(name="Calibri", bold=True, color="2ECC71", size=11)
-
-                center = Alignment(horizontal="center", vertical="center")
-                left   = Alignment(horizontal="left",   vertical="center")
-
-                thin = Side(style="thin", color="1E2D4A")
-                bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
-
-                STATUS_FG = {
-                    "Approved": "2ECC71", "WIP": "4A90D9", "Review": "9B59B6",
-                    "Pending": "E67E22", "Hold": "E74C3C", "Retake": "F39C12", "N/A": "6C7A89"
-                }
-
-                # ═══ Sheet 1: Summary ═════════════════════════════════════════
-                ws = wb.active
-                ws.title = "Summary"
-                ws.sheet_view.showGridLines = False
-                for col in range(1, 10):
-                    ws.column_dimensions[get_column_letter(col)].width = 18
-
-                # Title banner
-                ws.merge_cells("A1:I1")
-                c = ws["A1"]
-                c.value = f"ARTIST REPORT — {artist_info['name'].upper()}"
-                c.font = Font(name="Calibri", bold=True, color="FFFFFF", size=18)
-                c.fill = PatternFill("solid", fgColor="E94560")
-                c.alignment = center
-                ws.row_dimensions[1].height = 40
-
-                # Sub header
-                ws.merge_cells("A2:I2")
-                c = ws["A2"]
-                c.value = (f"{artist_info.get('role','')}  ·  "
-                           f"{artist_info.get('seniority','')}  ·  "
-                           f"{artist_info.get('availability','')}  ·  "
-                           f"Skills: {artist_info.get('skills','')}")
-                c.font = Font(name="Calibri", color="C8D0E0", size=10)
-                c.fill = PatternFill("solid", fgColor="0F0F2D")
-                c.alignment = center
-                ws.row_dimensions[2].height = 22
-
-                # KPI row
-                kpis = [
-                    ("TOTAL SHOTS", report["total_shots"]),
-                    ("APPROVED",    report["approved"]),
-                    ("WIP",         report["wip"]),
-                    ("RETAKE",      report["retake"]),
-                    ("TOTAL FRAMES",report["total_frames"]),
-                    ("HOURS LOGGED",fmt_hours(total_s)),
-                ]
-                row = 4
-                for idx, (label, val) in enumerate(kpis):
-                    col = idx + 1
-                    lc = ws.cell(row=row, column=col, value=label)
-                    lc.font = grey_font; lc.fill = card_bg; lc.alignment = center; lc.border = bdr
-                    vc = ws.cell(row=row+1, column=col, value=str(val))
-                    vc.font = Font(name="Calibri", bold=True, color="E94560", size=14)
-                    vc.fill = card_bg; vc.alignment = center; vc.border = bdr
-                    ws.row_dimensions[row].height = 18
-                    ws.row_dimensions[row+1].height = 28
-
-                # ═══ Sheet 2: Shot List ═══════════════════════════════════════
-                ws2 = wb.create_sheet("Shot List")
-                ws2.sheet_view.showGridLines = False
-                headers = ["Project","Sequence","Shot Name","Status","Priority",
-                           "Frames","ETA","Roto","Paint","CG","Comp","Tracking"]
-                col_widths = [22, 12, 14, 12, 10, 8, 12, 10, 10, 10, 10, 10]
-                for i, (h, w) in enumerate(zip(headers, col_widths), 1):
-                    ws2.column_dimensions[get_column_letter(i)].width = w
-                    c = ws2.cell(row=1, column=i, value=h)
-                    c.font = white_bold; c.fill = hdr_bg; c.alignment = center; c.border = bdr
-                ws2.row_dimensions[1].height = 22
-
-                for ri, s in enumerate(report["shots"], 2):
-                    row_fill = PatternFill("solid", fgColor="16213E") if ri % 2 == 0 else PatternFill("solid", fgColor="111827")
-                    vals = [s.get("project",""), s.get("sequence",""), s.get("shot_name",""),
-                            s.get("status",""), s.get("priority",""), s.get("frame_count",0),
-                            s.get("eta",""), s.get("roto",""), s.get("paint",""),
-                            s.get("cg",""), s.get("comp",""), s.get("tracking","")]
-                    for ci, v in enumerate(vals, 1):
-                        cell = ws2.cell(row=ri, column=ci, value=v)
-                        cell.fill = row_fill; cell.border = bdr; cell.alignment = left
-                        if ci == 4:  # status
-                            fg = STATUS_FG.get(v, "6C7A89")
-                            cell.font = Font(name="Calibri", bold=True, color=fg, size=10)
-                        else:
-                            cell.font = white_norm
-                    ws2.row_dimensions[ri].height = 18
-
-                # ═══ Sheet 3: Time Log ════════════════════════════════════════
-                ws3 = wb.create_sheet("Time Log")
-                ws3.sheet_view.showGridLines = False
-                t_headers = ["Project","Shot","Department","Date","Duration","Notes"]
-                t_widths  = [22, 16, 14, 12, 12, 30]
-                for i, (h, w) in enumerate(zip(t_headers, t_widths), 1):
-                    ws3.column_dimensions[get_column_letter(i)].width = w
-                    c = ws3.cell(row=1, column=i, value=h)
-                    c.font = white_bold; c.fill = accent_bg; c.alignment = center; c.border = bdr
-                ws3.row_dimensions[1].height = 22
-
-                sessions = db.get_time_sessions(artist_name=artist_info["name"], limit=1000)
-                completed = [s for s in sessions if s.get("ended_at")]
-                for ri, sess in enumerate(completed, 2):
-                    row_fill = PatternFill("solid", fgColor="16213E") if ri%2==0 else PatternFill("solid", fgColor="111827")
-                    dur = fmt_duration(sess.get("duration_s", 0))
-                    date_s = (sess.get("started_at") or "")[:10]
-                    vals = [sess.get("project_name",""), sess.get("shot_name",""),
-                            sess.get("dept",""), date_s, dur, sess.get("notes","")]
-                    for ci, v in enumerate(vals, 1):
-                        cell = ws3.cell(row=ri, column=ci, value=v)
-                        cell.fill = row_fill; cell.border = bdr; cell.alignment = left
-                        cell.font = white_norm if ci != 5 else grn_font
-                    ws3.row_dimensions[ri].height = 18
-
-                # Total row
-                total_row = len(completed) + 2
-                tc = ws3.cell(row=total_row, column=4, value="TOTAL")
-                tc.font = white_bold; tc.fill = sub_bg; tc.alignment = center; tc.border = bdr
-                tv = ws3.cell(row=total_row, column=5, value=fmt_hours(total_s))
-                tv.font = Font(name="Calibri", bold=True, color="2ECC71", size=11)
-                tv.fill = sub_bg; tv.alignment = center; tv.border = bdr
-
-                buf = io.BytesIO()
-                wb.save(buf)
-                buf.seek(0)
-                return buf
-
-            excel_buf = make_artist_excel(report, artist, time_summary)
-            fname = f"{artist['name'].replace(' ','_')}_report_{datetime.date.today()}.xlsx"
-            st.download_button(
-                label="📥 Download Excel Report",
-                data=excel_buf,
-                file_name=fname,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-
-        except ImportError:
-            st.warning("openpyxl not installed. Run: pip install openpyxl")
-
-        # ── CSV fallback ──────────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("**CSV Export (Shot List)**")
-        if report["shots"]:
-            import csv
-            csv_buf = io.StringIO()
-            writer = csv.DictWriter(csv_buf, fieldnames=report["shots"][0].keys())
-            writer.writeheader()
-            writer.writerows(report["shots"])
-            st.download_button(
-                "📄 Download CSV",
-                data=csv_buf.getvalue().encode(),
-                file_name=f"{artist['name'].replace(' ','_')}_shots.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-
-        # ── Text summary ──────────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("**Quick Text Summary**")
-        summary_txt = (
-            f"ARTIST REPORT: {artist['name']}\n"
-            f"Role: {artist.get('role','')} | Seniority: {artist.get('seniority','')}\n"
-            f"Generated: {datetime.date.today()}\n"
-            f"{'─'*40}\n"
-            f"Total Shots : {report['total_shots']}\n"
-            f"Approved    : {report['approved']}\n"
-            f"WIP         : {report['wip']}\n"
-            f"Retake      : {report['retake']}\n"
-            f"Total Frames: {report['total_frames']:,}\n"
-            f"Hours Logged: {fmt_hours(total_s)}\n"
-        )
-        st.code(summary_txt, language=None)
-        st.download_button(
-            "📋 Download Text Summary",
-            data=summary_txt.encode(),
-            file_name=f"{artist['name'].replace(' ','_')}_summary.txt",
-            mime="text/plain",
-            use_container_width=True,
-        )
+                    st.divider()
