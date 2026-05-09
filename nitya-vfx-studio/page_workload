@@ -1,0 +1,210 @@
+"""
+page_workload.py — Studio-wide artist workload dashboard
+Add to app.py:
+    from page_workload import page_workload
+    elif page == "workload": page_workload()
+"""
+import streamlit as st
+
+
+def fmt_hours(seconds):
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    return f"{h}h {m:02d}m" if h else (f"{m}m" if m else "0m")
+
+
+STATUS_COLORS = {
+    "wip":      ("#4A90D9", "WIP"),
+    "pending":  ("#E67E22", "Pending"),
+    "review":   ("#9B59B6", "Review"),
+    "approved": ("#2ECC71", "Approved"),
+    "retake":   ("#F39C12", "Retake"),
+    "hold":     ("#E74C3C", "Hold"),
+}
+
+
+def page_workload(db, nav_fn):
+    st.markdown('<div class="section-header">📊 Workload Dashboard</div>', unsafe_allow_html=True)
+
+    rows = db.get_workload_summary()
+
+    if not rows:
+        st.info("No shot assignments found. Assign artists to shots to see workload data.")
+        return
+
+    # ── Studio-wide KPIs ─────────────────────────────────────────────────────
+    total_shots  = sum(r["total_shots"]      for r in rows)
+    total_wip    = sum(r["wip"]              for r in rows)
+    total_rev    = sum(r["review"]           for r in rows)
+    total_app    = sum(r["approved"]         for r in rows)
+    total_frames = sum(r["total_frames"]     for r in rows)
+    total_hrs    = sum(r["tracked_seconds"]  for r in rows)
+
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.metric("👥 Artists",    len(rows))
+    k2.metric("🎬 Shots",      total_shots)
+    k3.metric("🔵 WIP",        total_wip)
+    k4.metric("🔍 Review",     total_rev)
+    k5.metric("✅ Approved",   total_app)
+    k6.metric("⏱ Hrs Tracked", fmt_hours(total_hrs))
+    st.markdown("")
+
+    # ── Sort control ─────────────────────────────────────────────────────────
+    sort_col, _ = st.columns([2, 5])
+    with sort_col:
+        sort_by = st.selectbox(
+            "Sort by",
+            ["WIP (desc)", "Total Shots (desc)", "Approved (desc)", "Tracked Hours (desc)", "Name A–Z"],
+            key="wl_sort"
+        )
+
+    sort_key_map = {
+        "WIP (desc)":           lambda r: -r["wip"],
+        "Total Shots (desc)":   lambda r: -r["total_shots"],
+        "Approved (desc)":      lambda r: -r["approved"],
+        "Tracked Hours (desc)": lambda r: -r["tracked_seconds"],
+        "Name A–Z":             lambda r:  r["artist_name"].lower(),
+    }
+    rows = sorted(rows, key=sort_key_map.get(sort_by, lambda r: -r["wip"]))
+
+    st.markdown("---")
+    st.markdown(f"**{len(rows)} artists with assigned shots**")
+
+    # ── Artist workload rows ──────────────────────────────────────────────────
+    max_shots = max((r["total_shots"] for r in rows), default=1)
+
+    for row in rows:
+        name    = row["artist_name"]
+        total   = row["total_shots"]
+        wip     = row["wip"]
+        pending = row["pending"]
+        review  = row["review"]
+        approv  = row["approved"]
+        retake  = row["retake"]
+        hold    = row["hold"]
+        frames  = row["total_frames"]
+        tracked = row["tracked_seconds"]
+
+        # Workload score (rough busyness indicator)
+        score = wip * 3 + review * 2 + retake * 2 + pending
+        if score == 0 and total > 0:
+            load_color = "#2ECC71"
+            load_label = "CLEAR"
+        elif score < 6:
+            load_color = "#4A90D9"
+            load_label = "LIGHT"
+        elif score < 14:
+            load_color = "#E67E22"
+            load_label = "BUSY"
+        else:
+            load_color = "#E74C3C"
+            load_label = "HEAVY"
+
+        bar_pct = int(total / max(max_shots, 1) * 100)
+
+        # Try to get color from global artist roster
+        ga = db.get_global_artist_by_name(name) if hasattr(db, "get_global_artist_by_name") else None
+        name_color = (ga.get("color", "#f5a623") if ga else "#f5a623")
+
+        with st.container():
+            c_name, c_load, c_stats, c_bar, c_link = st.columns([2, 1, 3.5, 2.5, 1])
+
+            with c_name:
+                st.markdown(
+                    f'<div style="padding:10px 0">'
+                    f'<div style="font-weight:700;color:{name_color};font-size:14px">{name}</div>'
+                    f'<div style="font-size:10px;color:#6c7a89">{fmt_hours(tracked)} tracked</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+            with c_load:
+                st.markdown(
+                    f'<div style="padding:10px 0;text-align:center">'
+                    f'<div style="background:{load_color}20;color:{load_color};'
+                    f'border:1px solid {load_color}40;border-radius:6px;padding:4px 0;'
+                    f'font-size:10px;font-weight:700;letter-spacing:1px">{load_label}</div>'
+                    f'<div style="font-size:10px;color:#6c7a89;margin-top:4px">{total} shots</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+            with c_stats:
+                # Mini pills row
+                pills = [
+                    (wip,     "#4A90D9", "WIP"),
+                    (pending, "#E67E22", "Pend"),
+                    (review,  "#9B59B6", "Rev"),
+                    (approv,  "#2ECC71", "App"),
+                    (retake,  "#F39C12", "Ret"),
+                    (hold,    "#E74C3C", "Hold"),
+                ]
+                pills_html = "".join(
+                    f'<span style="background:{c}20;color:{c};border:1px solid {c}40;'
+                    f'border-radius:4px;padding:2px 7px;font-size:10px;margin-right:3px;'
+                    f'{"font-weight:700;" if v > 0 else "opacity:0.35;"}">'
+                    f'{v} {l}</span>'
+                    for v, c, l in pills
+                )
+                st.markdown(
+                    f'<div style="padding:10px 0">{pills_html}'
+                    f'<div style="font-size:10px;color:#6c7a89;margin-top:6px">'
+                    f'🎞 {frames:,} frames</div></div>',
+                    unsafe_allow_html=True
+                )
+
+            with c_bar:
+                # Segmented progress bar
+                segs = [
+                    (approv, "#2ECC71"),
+                    (wip,    "#4A90D9"),
+                    (review, "#9B59B6"),
+                    (retake, "#F39C12"),
+                    (hold,   "#E74C3C"),
+                    (pending,"#E67E22"),
+                ]
+                bar_segs = ""
+                for count, color in segs:
+                    pct = int(count / max(total, 1) * 100)
+                    if pct > 0:
+                        bar_segs += (
+                            f'<div style="height:100%;width:{pct}%;'
+                            f'background:{color};display:inline-block"></div>'
+                        )
+                st.markdown(
+                    f'<div style="padding:14px 0 0 0">'
+                    f'<div style="background:#16213e;border-radius:4px;height:8px;overflow:hidden">'
+                    f'{bar_segs}</div>'
+                    f'<div style="font-size:9px;color:#3d4561;margin-top:3px">'
+                    f'{int(approv/max(total,1)*100)}% approved</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+            with c_link:
+                st.markdown('<div style="padding:8px 0"></div>', unsafe_allow_html=True)
+                if ga:
+                    if st.button("👤", key=f"wl_profile_{name}", use_container_width=True,
+                                 help=f"Open {name}'s profile"):
+                        nav_fn("artist_profile", current_global_artist_id=ga["id"])
+                else:
+                    st.caption("—")
+
+        st.divider()
+
+    # ── Heat-map table ────────────────────────────────────────────────────────
+    with st.expander("📋 Table View", expanded=False):
+        import pandas as pd
+        df = pd.DataFrame([{
+            "Artist":         r["artist_name"],
+            "WIP":            r["wip"],
+            "Pending":        r["pending"],
+            "Review":         r["review"],
+            "Approved":       r["approved"],
+            "Retake":         r["retake"],
+            "Hold":           r["hold"],
+            "Total Shots":    r["total_shots"],
+            "Frames":         r["total_frames"],
+            "Tracked Hours":  round(r["tracked_seconds"] / 3600, 2),
+        } for r in rows])
+        st.dataframe(df, use_container_width=True, hide_index=True)
