@@ -23,6 +23,9 @@ st.set_page_config(
 sys.path.insert(0, os.path.dirname(__file__))
 from database import Database
 from excel_io import export_to_excel, import_from_excel
+from page_global_artists import page_global_artists
+from page_artist_profile  import page_artist_profile
+from page_workload        import page_workload
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 STATUSES      = ["Pending", "WIP", "Review", "Approved", "Hold", "Retake", "N/A"]
