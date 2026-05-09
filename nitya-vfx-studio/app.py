@@ -1086,5 +1086,11 @@ elif page == "shot_detail" and st.session_state.current_shot_id:
     page_shot_detail()
 elif page == "artists" and st.session_state.current_project_id:
     page_artists()
+elif page == "global_artists":
+    page_global_artists(db, nav)
+elif page == "artist_profile":
+    page_artist_profile(db, nav)
+elif page == "workload":
+    page_workload(db, nav)
 else:
     page_projects()
